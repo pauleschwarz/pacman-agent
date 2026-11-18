@@ -1,18 +1,18 @@
 # Team Information
 
-**Course:** _[fill your course code and name]_
+**Course:** AI UPF 
 
-**Semester:** Semester 2, 2020
+**Semester:** Trimester 1, 2026
 
 **Instructor:** _[name of your instructor]_
 
-**Team name:** _[replace this with team name in plan text]_
+**Team name:** Slowalemans 
 
 **Team members:**
 
-* Student 1's Student number - Full Name - Student email - Student Github id
+* Student 1's Student number - Paul Schwarz - Student email - Student Github id
 * Student 2's Student number - Full Name - Student email - Student Github id
-* Student 3's Student number - Full Name - Student email - Student Github id
+
 
 Replace the lines above with the correct details of members. Delete or add lines as needed.
 
