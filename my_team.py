@@ -6,178 +6,509 @@
 # John DeNero (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
 # For more info, see http://inst.eecs.berkeley.edu/~cs188/sp09/pacman.html
 
-import random
-import contest.util as util
+"""Capture-the-flag team: a raider collects food, a guard defends the border.
+
+Both agents share one map analysis and one belief over hidden opponent
+positions. Each turn adds the acting agent's own sonar reading to that belief.
+The README explains every rule and the measurements behind it.
+"""
+
+from collections import Counter, deque
+from heapq import heappop, heappush
+import traceback
 
 from contest.capture_agents import CaptureAgent
-from contest.game import Directions
-from contest.util import nearest_point
+from contest.game import Actions, Directions
+from contest.util import manhattan_distance
+
+SIGHT = 5         # rules 2.5: opponents within this Manhattan distance are visible
+ENDGAME = 50      # own turns left when the roles start to depend on the score
+HELP_CARGO = 5    # a visible invader carrying this much calls the raider back
+REGION = 10       # the guard contests cells within this many steps of an invader
+INF = 10 ** 6
+STRICT = False    # tests set this so that a bug raises instead of being logged
 
 
-#################
-# Team creation #
-#################
+def create_team(first_index, second_index, is_red, first="Raider", second="Guard", num_training=0):
+    team = Team()
+    return [TeamAgent(first_index, team, first), TeamAgent(second_index, team, second)]
 
-def create_team(first_index, second_index, is_red,
-                first='OffensiveReflexAgent', second='DefensiveReflexAgent', num_training=0):
+
+class Team:
+    """State the two agents of one team share during a game."""
+
+    def __init__(self):
+        self.maze = None
+        self.tracker = None
+        self.helping = False  # the raider defends this turn
+        self.joined = set()
+
+    def join(self, agent, state):
+        # An agent registering a second time means a new game in the same process.
+        if self.maze is None or agent.index in self.joined:
+            self.maze = Maze(state, agent.red, agent.get_maze_distance)
+            self.tracker = Tracker(state, self.maze, agent.get_opponents(state), agent.get_team(state))
+            self.helping = False
+            self.joined = set()
+        self.joined.add(agent.index)
+
+
+class Maze:
+    """Static facts about the map, seen from one team."""
+
+    def __init__(self, state, red, distance):
+        walls = state.get_walls()
+        self.red = red
+        self.middle = walls.width // 2
+        self.neighbors = {}
+        for p in walls.as_list(False):
+            self.neighbors[p] = [(Actions.vector_to_direction((q[0] - p[0], q[1] - p[1])), q)
+                                 for q in Actions.get_legal_neighbors(p, walls) if q != p]
+        # Gates are our border cells with an open neighbour on the enemy side.
+        self.gates = [p for p, edges in self.neighbors.items()
+                      if self.home(p) and any(not self.home(q) for _, q in edges)]
+        self.nearest_gate = {p: min(self.gates, key=lambda g: distance(p, g)) for p in self.neighbors}
+        self.center = min(self.gates, key=lambda g: sum(distance(g, h) for h in self.gates))
+        self.exit = pocket_exits(self.neighbors)
+
+    def home(self, p):
+        return (p[0] < self.middle) == self.red
+
+
+def pocket_exits(neighbors):
+    """Peel dead ends. Each removed cell maps to the cell where its pocket meets the loops."""
+    degree = {p: len(edges) for p, edges in neighbors.items()}
+    leaves = deque(p for p in degree if degree[p] == 1)
+    parent = {}
+    while leaves:
+        p = leaves.popleft()
+        degree[p] = 0
+        for _, q in neighbors[p]:
+            if degree[q]:
+                parent[p] = q
+                degree[q] -= 1
+                if degree[q] == 1:
+                    leaves.append(q)
+                break
+    exits = {}
+    for p, q in reversed(list(parent.items())):
+        exits[p] = exits.get(q, q)
+    return exits
+
+
+class Tracker:
+    """Exact Bayes filter over the cells each hidden opponent can occupy.
+
+    Predict: an opponent that moved since the last update stays or steps to a
+    neighbour with equal probability. Observe: drop cells that contradict its
+    Pacman/ghost role, our two lines of sight or the acting agent's sonar.
     """
-    This function should return a list of two agents that will form the
-    team, initialized using firstIndex and secondIndex as their agent
-    index numbers.  isRed is True if the red team is being created, and
-    will be False if the blue team is being created.
 
-    As a potentially helpful development aid, this function can take
-    additional string-valued keyword arguments ("first" and "second" are
-    such arguments in the case of this function), which will come from
-    the --red_opts and --blue_opts command-line arguments to capture.py.
-    For the nightly contest, however, your team will be created without
-    any extra arguments, so you should make sure that the default
-    behavior is what you want for the nightly contest.
-    """
-    return [eval(first)(first_index), eval(second)(second_index)]
+    def __init__(self, state, maze, opponents, team):
+        self.maze = maze
+        self.opponents = opponents
+        self.team = team
+        self.start = {i: state.get_initial_agent_position(i) for i in opponents}
+        self.belief = {i: {self.start[i]: 1.0} for i in opponents}
+        self.clock = None
 
-
-##########
-# Agents #
-##########
-
-class ReflexCaptureAgent(CaptureAgent):
-    """
-    A base class for reflex agents that choose score-maximizing actions
-    """
-
-    def __init__(self, index, time_for_computing=.1):
-        super().__init__(index, time_for_computing)
-        self.start = None
-
-    def register_initial_state(self, game_state):
-        self.start = game_state.get_agent_position(self.index)
-        CaptureAgent.register_initial_state(self, game_state)
-
-    def choose_action(self, game_state):
-        """
-        Picks among the actions with the highest Q(s,a).
-        """
-        actions = game_state.get_legal_actions(self.index)
-
-        # You can profile your evaluation time by uncommenting these lines
-        # start = time.time()
-        values = [self.evaluate(game_state, a) for a in actions]
-        # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
-
-        max_value = max(values)
-        best_actions = [a for a, v in zip(actions, values) if v == max_value]
-
-        food_left = len(self.get_food(game_state).as_list())
-
-        if food_left <= 2:
-            best_dist = 9999
-            best_action = None
-            for action in actions:
-                successor = self.get_successor(game_state, action)
-                pos2 = successor.get_agent_position(self.index)
-                dist = self.get_maze_distance(self.start, pos2)
-                if dist < best_dist:
-                    best_action = action
-                    best_dist = dist
-            return best_action
-
-        return random.choice(best_actions)
-
-    def get_successor(self, game_state, action):
-        """
-        Finds the next successor which is a grid position (location tuple).
-        """
-        successor = game_state.generate_successor(self.index, action)
-        pos = successor.get_agent_state(self.index).get_position()
-        if pos != nearest_point(pos):
-            # Only half a grid position was covered
-            return successor.generate_successor(self.index, action)
+    def update(self, state, index):
+        # timeleft counts global moves, so it tells which agents moved since our last update.
+        clock = state.data.timeleft
+        if self.clock is None:
+            movers = set(self.opponents)
         else:
-            return successor
+            count = state.get_num_agents()
+            movers = {(index - k) % count for k in range(1, min(self.clock - clock, count) + 1)}
+        self.clock = clock
+        me = state.get_agent_position(index)
+        friends = [state.get_agent_position(i) for i in self.team]
+        readings = state.get_agent_distances()
+        for i in self.opponents:
+            seen = state.get_agent_position(i)
+            if seen is not None:
+                self.belief[i] = {seen: 1.0}
+                continue
+            pacman = state.get_agent_state(i).is_pacman
+            reading = readings[i] if readings and i < len(readings) else None
 
-    def evaluate(self, game_state, action):
+            def possible(cell):
+                return (self.maze.home(cell) == pacman
+                        and all(manhattan_distance(cell, f) > SIGHT for f in friends)
+                        and (reading is None or state.get_distance_prob(manhattan_distance(me, cell), reading) > 0))
+
+            belief = self.elapse(self.belief[i]) if i in movers else self.belief[i]
+            belief = {p: w for p, w in belief.items() if possible(p)}
+            if not belief:
+                # Only a respawn moves an opponent farther than one step. It may have moved once since.
+                belief = {p: w for p, w in self.elapse({self.start[i]: 1.0}).items() if possible(p)}
+            if not belief:
+                belief = {p: 1.0 for p in self.maze.neighbors if possible(p)}
+            total = sum(belief.values())
+            self.belief[i] = {p: w / total for p, w in belief.items()} if total else {self.start[i]: 1.0}
+
+    def elapse(self, belief):
+        result = Counter()
+        for p, w in belief.items():
+            moves = self.maze.neighbors[p]
+            share = w / (len(moves) + 1)
+            result[p] += share
+            for _, q in moves:
+                result[q] += share
+        return result
+
+
+class TeamAgent(CaptureAgent):
+    def __init__(self, index, team, role):
+        super().__init__(index)
+        self.team = team
+        self.role = role
+
+    def register_initial_state(self, state):
+        super().register_initial_state(state)
+        self.team.join(self, state)
+        self.maze = self.team.maze
+        self.start = state.get_agent_position(self.index)
+        self.recent = deque(maxlen=8)
+        self.target = None
+        self.food = set(self.get_food_you_are_defending(state).as_list())
+        self.clue = None
+        self.expiry = 0
+
+    def choose_action(self, state):
+        # The base class keeps every observation; we never read old ones.
+        del self.observation_history[:-1]
+        legal = state.get_legal_actions(self.index)
+        try:
+            self.team.tracker.update(state, self.index)
+            self.note_clues(state)
+            lead = self.get_score(state)
+            endgame = self.turns_left(state) <= ENDGAME
+            if self.role == "Guard":
+                # Behind at the end, a second raider is worth more than a guard.
+                action = self.raid(state, legal) if endgame and lead < 0 else self.guard(state, legal)
+            elif endgame and lead > 0:
+                # Ahead at the end, bank what we carry and help protect the lead.
+                action = self.bank(state, legal)
+                self.team.helping = not action
+                action = action or self.defend(state, legal)
+            else:
+                self.team.helping = self.must_help(state)
+                action = self.defend(state, legal) if self.team.helping else self.raid(state, legal)
+        except Exception:
+            # A crash forfeits the game. Log the bug and play a legal move instead.
+            if STRICT:
+                raise
+            traceback.print_exc()
+            action = None
+        if action in legal:
+            return action
+        return Directions.STOP if Directions.STOP in legal else legal[0]
+
+    # Shared helpers -------------------------------------------------------
+
+    def visible(self, state, invaders):
+        enemies = (state.get_agent_state(i) for i in self.get_opponents(state))
+        return [e for e in enemies if e.get_position() is not None and e.is_pacman == invaders]
+
+    def must_help(self, state):
+        """A raider on our side turns back for a visible invader carrying a lot.
+
+        One ghost rarely catches a Pacman that keeps moving away from it; two usually do.
         """
-        Computes a linear combination of features and feature weights
+        me = state.get_agent_state(self.index)
+        return (not me.is_pacman and not me.scared_timer and
+                any(e.num_carrying >= HELP_CARGO for e in self.visible(state, invaders=True)))
+
+    def bank(self, state, legal):
+        """Cheapest risk-aware route home for a Pacman, or None on our side."""
+        if not state.get_agent_state(self.index).is_pacman:
+            return None
+        pos = state.get_agent_position(self.index)
+        costs, first = self.routes(pos, legal, self.visible(state, invaders=False),
+                                   set(self.get_capsules(state)))
+        gates = [gate for gate in self.maze.gates if gate in first]
+        return first[min(gates, key=lambda g: (costs[g], g))] if gates else None
+
+    def home_step(self, pos, goal, legal):
+        """First action of a shortest path to goal that stays on our side, or None."""
+        queue = deque([(pos, Directions.STOP)])
+        seen = {pos}
+        while queue:
+            p, first = queue.popleft()
+            if p == goal:
+                return first
+            for direction, q in self.maze.neighbors[p]:
+                if q not in seen and self.maze.home(q) and (p != pos or direction in legal):
+                    seen.add(q)
+                    queue.append((q, direction if p == pos else first))
+        return None
+
+    def turns_left(self, state):
+        return state.data.timeleft // state.get_num_agents()
+
+    # Raider ---------------------------------------------------------------
+
+    def raid(self, state, legal):
+        pos = state.get_agent_position(self.index)
+        if len(legal) == 1:
+            return legal[0]
+        self.recent.append(pos)
+        me = state.get_agent_state(self.index)
+        ghosts = self.visible(state, invaders=False)
+        food = self.get_food(state).as_list()
+        caps = set(self.get_capsules(state))
+        dist = self.get_maze_distance
+        home = min(dist(pos, gate) for gate in self.maze.gates)
+        close = any(dist(pos, g.get_position()) <= 5 and g.scared_timer <= 3 for g in ghosts)
+        # During capsule protection even an unseen opponent's timer is observable.
+        protection = min(state.get_agent_state(i).scared_timer for i in self.get_opponents(state))
+        full = me.num_carrying >= 5 and protection <= home + 3
+        bank = me.num_carrying and (full or len(food) <= 2 or self.turns_left(state) <= home + 3
+                                    or (close and home <= 5))
+        # Save the next capsule while the first still covers the trip and a short retreat.
+        useful_caps = [p for p in sorted(caps) if protection <= dist(pos, p) + 6]
+
+        if ghosts:
+            # With a ghost in sight, prefer targets we provably reach first and can still escape from.
+            threat = self.threat(state)
+            arrive, first = self.safe_reach(pos, legal, threat)
+            slack = self.escape_slack(threat)
+            if bank:
+                goals = [q for q in first if self.maze.home(q)]
+            else:
+                goals = [f for f in food if f in first and arrive[f] <= slack[f]]
+                goals += [c for c in useful_caps if c in first]
+            if goals:
+                def eta(p):
+                    bonus = (8 if close else 2) if p in caps and not bank else 0
+                    return arrive[p] - bonus - (p == self.target), p
+                self.target = min(goals, key=eta)
+                return first[self.target]
+
+        # Otherwise take the cheapest route by risk-weighted cost.
+        def safe(action):
+            # Reject an exposed first step whenever a safer legal action exists.
+            q = Actions.get_successor(pos, action)
+            return (self.maze.home(q) or q in caps or
+                    all(g.scared_timer > 1 or dist(q, g.get_position()) > 1 for g in ghosts))
+
+        allowed = [action for action in legal if safe(action)] or legal
+        costs, first = self.routes(pos, allowed, ghosts, caps)
+        goals = self.maze.gates if bank or not food else food + useful_caps
+        reachable = [p for p in goals if p in first]
+        if not reachable:
+            return Directions.STOP if Directions.STOP in allowed else allowed[0]
+
+        def priority(p):
+            bonus = (8 if close else 2) if p in caps and not bank else 0
+            return costs[p] - bonus - (p == self.target), dist(pos, p), p
+
+        self.target = min(reachable, key=priority)
+        return first[self.target]
+
+    def threat(self, state):
+        """Earliest turn at which a visible opponent can stand on each enemy-side cell.
+
+        A scared ghost is harmless until its timer runs out, so its threat starts no earlier.
         """
-        features = self.get_features(game_state, action)
-        weights = self.get_weights(game_state, action)
-        return features * weights
+        threat = {}
+        for i in self.get_opponents(state):
+            p = state.get_agent_position(i)
+            if p is None:
+                continue
+            timer = state.get_agent_state(i).scared_timer
+            for q in self.maze.neighbors:
+                if not self.maze.home(q):
+                    t = max(self.get_maze_distance(p, q), timer)
+                    if t < threat.get(q, INF):
+                        threat[q] = t
+        return threat
 
-    def get_features(self, game_state, action):
+    def safe_reach(self, pos, legal, threat):
+        """Breadth-first search over cells we reach strictly before any visible opponent."""
+        arrive = {pos: 0}
+        first = {}
+        frontier = deque([pos])
+        while frontier:
+            p = frontier.popleft()
+            for direction, q in self.maze.neighbors[p]:
+                if q in arrive or (p == pos and direction not in legal):
+                    continue
+                t = arrive[p] + 1
+                if t >= threat.get(q, INF) and not self.maze.home(q):
+                    continue
+                arrive[q] = t
+                first[q] = direction if p == pos else first[p]
+                frontier.append(q)
+        return arrive, first
+
+    def escape_slack(self, threat):
+        """Latest arrival time at each cell from which we still reach home before every opponent.
+
+        slack(home) is unbounded; for an enemy cell q,
+        slack(q) = min(threat(q) - 1, max over neighbours r of slack(r) - 1).
         """
-        Returns a counter of features for the state
+        slack = {q: INF for q in self.maze.neighbors if self.maze.home(q)}
+        queue = [(-INF, q) for q in slack]
+        while queue:
+            s, p = heappop(queue)
+            if -s != slack[p]:
+                continue
+            for _, q in self.maze.neighbors[p]:
+                if self.maze.home(q):
+                    continue
+                value = min(threat.get(q, INF) - 1, slack[p] - 1)
+                if value > slack.get(q, -INF):
+                    slack[q] = value
+                    heappush(queue, (-value, q))
+        return slack
+
+    def routes(self, pos, legal, ghosts, caps):
+        """Dijkstra from pos. Returns the cost to each cell and the first action on its cheapest route."""
+        dist = self.get_maze_distance
+        costs = {pos: 0}
+        first = {}
+        queue = [(0, pos)]
+        while queue:
+            cost, p = heappop(queue)
+            if cost != costs[p]:
+                continue
+            for direction, q in self.maze.neighbors[p]:
+                if q == pos or (p == pos and direction not in legal):
+                    continue
+                step = 1 + self.recent.count(q)
+                if ghosts and not self.maze.home(q) and q not in caps:
+                    arrival = dist(pos, q)
+                    for g in ghosts:
+                        if g.scared_timer > arrival + 1:
+                            continue
+                        gap = dist(g.get_position(), q)
+                        step += 45 if gap <= 1 else 8 if gap == 2 else 0
+                        # Entering a pocket is a trap if the ghost can reach its exit first.
+                        mouth = self.maze.exit.get(q)
+                        if mouth and self.maze.exit.get(p) != mouth:
+                            if dist(g.get_position(), mouth) <= arrival + 2 * dist(q, mouth):
+                                step += 30
+                new_cost = cost + step
+                if new_cost < costs.get(q, INF):
+                    costs[q] = new_cost
+                    first[q] = direction if p == pos else first[p]
+                    heappush(queue, (new_cost, q))
+        return costs, first
+
+    # Guard ----------------------------------------------------------------
+
+    def guard(self, state, legal):
+        patrol = self.defend(state, legal)
+        me = state.get_agent_state(self.index)
+        if not me.scared_timer and not me.is_pacman:
+            return patrol
+        # A scared guard cannot catch anyone, so it raids if a round trip fits the window.
+        pos = state.get_agent_position(self.index)
+        dist = self.get_maze_distance
+        turns = min(me.scared_timer, self.turns_left(state))
+        if not me.is_pacman:
+            food = self.get_food(state).as_list()
+            if not any(dist(pos, p) + dist(p, self.maze.nearest_gate[p]) + 2 < turns for p in food):
+                return patrol
+        elif me.num_carrying >= 2 or turns <= min(dist(pos, gate) for gate in self.maze.gates) + 2:
+            return self.bank(state, legal) or patrol
+        action = self.raid(state, legal)
+        step = Actions.get_successor(pos, action)
+        if self.maze.home(step) and any(dist(step, e.get_position()) <= 1
+                                        for e in self.visible(state, invaders=True)):
+            return patrol
+        return action
+
+    def note_clues(self, state):
+        """Remember where an invader was last seen or last ate our food."""
+        pos = state.get_agent_position(self.index)
+        if pos == self.start:
+            self.recent.clear()
+            self.target = None
+        invaders = [e.get_position() for e in self.visible(state, invaders=True)]
+        food = set(self.get_food_you_are_defending(state).as_list())
+        missing = self.food - food
+        self.food = food
+        if invaders or missing:
+            self.clue = min(invaders or missing, key=lambda p: (self.get_maze_distance(pos, p), p))
+            self.expiry = state.data.timeleft - 6 * state.get_num_agents()
+        elif pos == self.clue or state.data.timeleft <= self.expiry or pos == self.start:
+            self.clue = None
+
+    def defend(self, state, legal):
+        post = self.patrol_gate(state)
+        pos = state.get_agent_position(self.index)
+        options = [(a, Actions.get_successor(pos, a)) for a in legal]
+        options = [(a, q) for a, q in options if self.maze.home(q)] or options
+        dist = self.get_maze_distance
+        invaders = [e.get_position() for e in self.visible(state, invaders=True)]
+        if invaders and state.get_agent_state(self.index).scared_timer > 0:
+            # Shadow from two steps away, close enough to pursue when the timer expires.
+            def shadow(option):
+                gap = min(dist(option[1], p) for p in invaders)
+                return gap < 2, abs(gap - 2), dist(option[1], post)
+            return min(options, key=shadow)[0]
+        if invaders:
+            for action, q in options:
+                if q in invaders:
+                    return action
+            return min(options, key=self.pressure(state, pos))[0]
+        goal = self.clue or post
+        # A shortcut across the border would turn the guard into a harmless Pacman.
+        return (self.home_step(pos, goal, legal)
+                or min(options, key=lambda option: dist(option[1], goal))[0])
+
+    def pressure(self, state, pos):
+        """Sort key for chasing the nearest visible invader.
+
+        First keep it from reaching a capsule before us. Then shrink what it can
+        still reach before us or a defending teammate within REGION steps: every
+        cell counts, food more, and gates too once it carries food it could bank.
+        Then get closer. Counting the whole half instead made the guard hold
+        far-away chokepoints on large maps while the invader ate nearby.
         """
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-        features['successor_score'] = self.get_score(successor)
-        return features
+        dist = self.get_maze_distance
+        invader = min(self.visible(state, invaders=True),
+                      key=lambda e: (dist(pos, e.get_position()), e.get_position()))
+        target = invader.get_position()
+        capsules = self.get_capsules_you_are_defending(state)
+        ahead = {p: dist(target, p) for p in self.maze.neighbors
+                 if self.maze.home(p) and dist(target, p) <= REGION}
+        value = {p: 1 for p in ahead}
+        for p in self.food & set(ahead):
+            value[p] += 2
+        if invader.num_carrying:
+            for p in set(self.maze.gates) & set(ahead):
+                value[p] += 3
+        mate = [i for i in self.get_team(state) if i != self.index][0]
+        mate_state = state.get_agent_state(mate)
+        covered = {p: INF for p in value}
+        if (self.role != "Guard" or self.team.helping) and not mate_state.is_pacman \
+                and not mate_state.scared_timer:
+            covered = {p: dist(state.get_agent_position(mate), p) for p in value}
 
-    def get_weights(self, game_state, action):
+        def key(option):
+            q = option[1]
+            free = sum(v for p, v in value.items() if ahead[p] <= min(dist(q, p), covered[p]))
+            return sum(dist(target, x) <= dist(q, x) for x in capsules), free, dist(q, target), q
+        return key
+
+    def patrol_gate(self, state):
+        """Each possible opponent cell votes for its nearest gate, weighted by probability and closeness.
+
+        A raider helping on defense leaves the gates next to the guard to the guard.
         """
-        Normally, weights do not depend on the game state.  They can be either
-        a counter or a dictionary.
-        """
-        return {'successor_score': 1.0}
-
-
-class OffensiveReflexAgent(ReflexCaptureAgent):
-    """
-  A reflex agent that seeks food. This is an agent
-  we give you to get an idea of what an offensive agent might look like,
-  but it is by no means the best or only way to build an offensive agent.
-  """
-
-    def get_features(self, game_state, action):
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-        food_list = self.get_food(successor).as_list()
-        features['successor_score'] = -len(food_list)  # self.getScore(successor)
-
-        # Compute distance to the nearest food
-
-        if len(food_list) > 0:  # This should always be True,  but better safe than sorry
-            my_pos = successor.get_agent_state(self.index).get_position()
-            min_distance = min([self.get_maze_distance(my_pos, food) for food in food_list])
-            features['distance_to_food'] = min_distance
-        return features
-
-    def get_weights(self, game_state, action):
-        return {'successor_score': 100, 'distance_to_food': -1}
-
-
-class DefensiveReflexAgent(ReflexCaptureAgent):
-    """
-    A reflex agent that keeps its side Pacman-free. Again,
-    this is to give you an idea of what a defensive agent
-    could be like.  It is not the best or only way to make
-    such an agent.
-    """
-
-    def get_features(self, game_state, action):
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-
-        my_state = successor.get_agent_state(self.index)
-        my_pos = my_state.get_position()
-
-        # Computes whether we're on defense (1) or offense (0)
-        features['on_defense'] = 1
-        if my_state.is_pacman: features['on_defense'] = 0
-
-        # Computes distance to invaders we can see
-        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
-        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
-        features['num_invaders'] = len(invaders)
-        if len(invaders) > 0:
-            dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
-            features['invader_distance'] = min(dists)
-
-        if action == Directions.STOP: features['stop'] = 1
-        rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
-        if action == rev: features['reverse'] = 1
-
-        return features
-
-    def get_weights(self, game_state, action):
-        return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
+        maze = self.maze
+        dist = self.get_maze_distance
+        votes = Counter()
+        for belief in self.team.tracker.belief.values():
+            for p, w in belief.items():
+                gate = maze.nearest_gate[p]
+                votes[gate] += w / (1 + dist(p, gate))
+        gates = maze.gates
+        if self.role != "Guard":
+            mate = [state.get_agent_position(i) for i in self.get_team(state) if i != self.index][0]
+            gates = [g for g in gates if dist(g, mate) > 3] or gates
+        return max(gates, key=lambda g: (votes[g], -dist(g, maze.center)))
