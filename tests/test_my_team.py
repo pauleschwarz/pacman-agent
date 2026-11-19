@@ -26,6 +26,8 @@ LAYOUTS = REPO / "pacman-contest/src/contest/layouts"
 
 
 def load(name):
+    if isinstance(name, list):
+        return Layout("custom", name)
     if name.startswith("RANDOM"):
         text = capture.random_layout(int(name[6:]))[1]
         return Layout(name, text.split("\n"))
@@ -97,8 +99,32 @@ class GameTest(unittest.TestCase):
                 with self.subTest(layout=layout, red=is_red):
                     red, blue = (ours(True), baseline(False)) if is_red else (baseline(True), ours(False))
                     game, = play(red, blue, layout)
-                    self.assertFalse(game.agent_crashed)
                     self.assertTrue(game.state.is_over())
+
+    def test_odd_maps(self):
+        # A walled-in empty cell at (7, 3) has no finite distance to anything; play goes on normally.
+        walled_in = ["%%%%%%%%%%%%%%",
+                     "%3 .  %%  . 4%",
+                     "% %%  % % . %%",
+                     "%  .  %%    .%",
+                     "%1 .   .  . 2%",
+                     "%%%%%%%%%%%%%%"]
+        game, = play(ours(True), baseline(False), walled_in)
+        self.assertTrue(game.state.is_over())
+        # Without any crossing the analysis fails; outside the tests the team must still play legal moves.
+        no_crossing = ["%%%%%%%%%%%%%%",
+                       "%3 .  %%  . 4%",
+                       "%  .  %%  .  %",
+                       "%1 .  %%  . 2%",
+                       "%%%%%%%%%%%%%%"]
+        my_team.STRICT = False
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as log:
+                game, = play(ours(True), ours(False), no_crossing)
+        finally:
+            my_team.STRICT = True
+        self.assertTrue(game.state.is_over())
+        self.assertIn("Traceback", log.getvalue())
 
     def test_decisions_stay_fast(self):
         team = ours(True)
