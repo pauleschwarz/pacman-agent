@@ -8,13 +8,16 @@ The team is a single file, `my_team.py`, using only the standard library and the
 ```sh
 git clone https://github.com/pauleschwarz/pacman-agent.git
 cd pacman-agent
-git submodule update --init --remote
+git submodule update --init
 python3.8 -m venv venv
 venv/bin/pip install -r pacman-contest/requirements.txt
 venv/bin/pip install -e pacman-contest
 ```
 
-Play one match against the course baseline, as in the assignment:
+`git submodule update --init` checks out the framework commit we tested (`54cd83c`). The assignment's
+`--remote` fetches the newest one instead.
+
+Play one match against the course baseline, as in the assignment (add `-q --delay-step 0` to skip the window):
 
 ```sh
 cd pacman-contest/src/contest
@@ -25,13 +28,14 @@ Run the tests (about 20 seconds) and a benchmark (each match in its own process,
 
 ```sh
 venv/bin/python -m unittest discover -s tests -v
-venv/bin/python tools/arena.py my_team.py baseline --layouts RANDOM1-20,fixed --jobs 8 --out results/run.jsonl
+venv/bin/python tools/arena.py my_team.py baseline --layouts RANDOM1-20,fixed --jobs 6
 ```
 
 ## How the team plays
 
-One agent is the **raider**, the other the **guard**. Both read from the same `Team` object, created once
-per game in `create_team`: a map analysis and a belief about where hidden opponents are.
+One agent is the **raider**, the other the **guard**. `create_team` gives both the same `Team` object; the
+first registration of each game fills it with a map analysis and a belief about where hidden opponents are.
+Every tuning number is a named constant at the top of `my_team.py`, with its meaning in one line.
 
 ### Shared map analysis (`Maze`)
 
@@ -57,8 +61,9 @@ on every turn that the true position of each opponent never drops to probability
 ### Raider
 
 **When to go home.** With food on board, the raider banks if at most two enemy pellets remain, if its remaining
-own turns barely cover the way home, if an active ghost is close and home is near, or if it carries five or
-more and the enemies' scared timers would run out before it gets back.
+own turns barely cover the way home (three in reserve), if a dangerous ghost and home are both within five steps,
+or if it carries five or more and the enemies' scared timers would run out before it gets back. A scared ghost
+whose fear ends within three turns already counts as dangerous.
 
 **Where to go with a ghost in sight.** The raider reasons about who arrives first:
 
@@ -73,13 +78,21 @@ Food is a safe target if we reach it in time to escape: `arrive(f) <= slack(f)`.
 because the ghost gets there as soon as we do. The raider takes the nearest safe pellet, prefers a capsule it
 reaches first, and banks along cells it reaches first.
 
-**Otherwise** it uses risk-weighted Dijkstra: every step costs 1 plus a small penalty for recently visited
-cells, and enemy cells cost 45 next to an active ghost, 8 at distance two, and 30 more when the ghost could reach
-the pocket exit before we get back out. The first step never lands next to an active ghost if another move
-exists. Capsules get a small bonus, more when a ghost is close.
+**Otherwise** it uses risk-weighted Dijkstra: every step costs 1, plus 1 for each visit to that cell among the
+last eight positions (this breaks loops), and enemy cells cost 45 more next to an active ghost, 8 at distance
+two, and 30 more when the ghost could reach the pocket exit before we get in and back out. A scared ghost adds
+nothing while its timer exceeds our arrival time plus one. The first step never lands next to an active ghost if another
+move exists.
+
+**Choosing among targets.** A capsule may cost 2 steps more than food, 8 with a dangerous ghost near. While
+the enemies stay scared longer than the trip to a capsule plus six turns, the raider does not aim for another
+capsule (it may still cross one on the way to food). The current target wins ties by one step, which stops
+dithering between equal choices.
 
 ### Guard
 
+- **Stay home.** Every defensive path stays on our half: one step across the border would turn the guard
+  into a Pacman that cannot catch anyone.
 - **Patrol.** Each possible opponent cell votes for its nearest gate, weighted by probability and by
   1 / (1 + distance). The guard waits at the gate with the most votes.
 - **Clues.** Food that disappears from our side, or the last sighting of an invader, becomes a destination
@@ -91,13 +104,16 @@ exists. Capsules get a small bonus, more when a ghost is close.
   teammate within 10 steps of it (every cell counts, food more, our gates too once it carries food), and
   (3) gets closer. Simple chasing fails: a Pacman that keeps moving away from one ghost is never caught.
   Counting the whole half instead of 10 steps made the guard hold distant chokepoints on large maps.
-- **Scared.** A scared guard cannot eat anyone. It raids enemy food when a round trip fits in its timer,
-  and otherwise keeps two steps from a visible invader so it can strike once the timer ends.
+- **Scared.** A scared guard cannot eat anyone. It raids enemy food when a round trip, plus two spare moves,
+  fits in its timer, using the raider's rules. It heads home with two pellets or when the window is down to
+  the way home plus two. It drops the raid if its next step would end on our side next to a visible invader.
+  Without a raid it keeps two steps from a visible invader, so it can strike once the timer ends.
 
 ### Team rules
 
 - **Help.** A raider on our side turns back to defend when a visible invader carries five or more pellets.
-  Both agents then shrink the invader's region together.
+  Both agents then shrink the invader's region together. Patrolling, the helper leaves the gates within
+  three steps of the guard to the guard.
 - **Endgame.** In the last 50 own turns, a team that is ahead banks and defends with both agents;
   a team that is behind sends the guard raiding too.
 
@@ -105,10 +121,18 @@ exists. Capsules get a small bonus, more when a ghost is close.
 
 - Every action is checked against the legal moves. If a bug raised an exception during a real match, the agent
   logs it and plays a legal move instead of forfeiting the game; the tests run with `STRICT = True`, so the
-  same bug fails them.
-- Measured on a MacBook Air (Apple M5): a move takes at most a few tens of milliseconds, setup about 0.4 s
+  same bug fails them. A map the analysis cannot handle (for example one without any crossing) is treated the
+  same way.
+- Measured on a MacBook Air (Apple M5): the slowest move took 55 ms, setup at most 1.3 s on the largest map
   (limits: 1 s and 15 s).
 - Shared state is rebuilt when a new game starts in the same process. No file, network or thread use.
+
+### Fair play
+
+The agents use only the observation the framework hands them: positions of opponents within sight, the noisy
+distances, and fields the observation keeps for every agent (Pacman or ghost, scared timer, food carried).
+The global move counter comes from `state.data.timeleft`, since the framework has no getter for it.
+Nothing reads the real game state, other agents' objects or files.
 
 ## Results
 
@@ -132,8 +156,8 @@ so both kinds matter. Points count 3 per win and 1 per draw, as a share of the m
   setup 1.3 s (jumboCapture). Half of the games had a 99th-percentile move time under 4 ms.
 - The baseline draws on `testCapture`, which has no food, and once on `tinyCapture`. The one loss is on
   `strategicCapture`: in its long corridors a single guard following an invader never catches it.
-- Against `v0` the share of points varied between 54% and 68% across our measurement sets. Expect the
-  lower end against a strong opponent.
+- Against `v0` the final version's share of points varied between 56% and 68% across our measurement sets.
+  Expect the lower end against a strong opponent.
 - On this laptop, more than six parallel matches caused occasional wall-clock stalls over one second even for
   moves that computed in milliseconds. Replayed alone, the same games ran without warnings and with identical moves.
 
@@ -145,10 +169,19 @@ venv/bin/python tools/arena.py my_team.py baseline <v0>/my_team.py --layouts RAN
 venv/bin/python tools/arena.py my_team.py baseline <v0>/my_team.py --layouts fixed --repeat 5 --seed final --jobs 6
 ```
 
-### What we tried
+### Known weaknesses
 
-Development used other games than the final measurement. In the first phase each candidate played the same
-600 random-maze games against `v0` (RANDOM201–500, both colors).
+- In a long corridor, a single guard following an invader never catches it (the strategicCapture loss).
+- The pocket analysis finds only tree-shaped dead ends. A dead-end branch with a small loop at its end is not
+  treated as a trap.
+- Nothing was measured on the tournament cluster or against other teams' agents.
+
+## Development
+
+Development used other games than the final measurement. Raw results of every row below are in `results/dev/`;
+in those files the opponent `agent` is `v0` (named after its folder). The variants themselves are not kept in the
+repository. In the first phase each candidate played the same 600 random-maze games against `v0`
+(RANDOM201–500, both colors).
 
 | Version | Change | W/D/L vs v0 | Points | Kept |
 |---|---|---:|---:|---|
@@ -172,24 +205,25 @@ The second phase therefore measured each candidate on the fixed layouts (10 seed
 | 16 | guard hunts a hidden invader at its most likely cell | 55.7% | 62.4% | **final** |
 | 17 | raider also turns back from the enemy side for an invader carrying 10 or more | 55.7% | 61.5% | no |
 
-Measurements that shaped these changes, from replays of games against `v0`:
+Smaller trials that did not survive: making the raider avoid every cell an opponent could reach first
+(100 games, 25/13/62 against `v0`; too passive), recalling the raider for every invader (200 games, 67/36/97),
+and two raiders without a guard (100 games each, 41/2/57 against `v0`, 24/0/76 against the baseline).
+
+Observations from replaying development games against `v0` shaped these changes. The small analysis scripts
+behind them are not in the repository, so treat these as rough figures:
 
 - About 55% of all points were banked while the defending team was scared by a capsule.
 - The raider ate food in under 5% of its turns. Most of the rest it spent near a ghost, at the border or on the enemy side.
 - Guards rarely catch anyone (about 0.5 deaths per game), so the game is mostly a race for food.
-
-Smaller trials (200 games each) that did not survive: making the raider avoid every cell an opponent could reach
-first (25/13/62 against `v0`; too passive), recalling the raider for every invader (67/36/97), and two raiders
-without a guard (41/2/57 against `v0`, 24/0/76 against the baseline).
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `my_team.py` | The team. |
-| `tests/test_my_team.py` | Real games on all layout kinds, tracker soundness, raider safety, timing, unit checks. |
+| `tests/test_my_team.py` | Real games on all layout kinds and odd maps, tracker soundness, raider safety, timing, unit checks. |
 | `tools/arena.py` | Parallel headless matches with time limits, error detection and a JSON line per game. |
-| `results/` | Raw benchmark results. |
+| `results/` | Raw results of the final measurement; `results/dev/` those of development. |
 
 ## Credits
 
