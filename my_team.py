@@ -455,10 +455,19 @@ class TeamAgent(CaptureAgent):
                 if q in invaders:
                     return action
             return min(options, key=self.pressure(state, pos))[0]
-        goal = self.clue or post
+        goal = self.clue or self.likely_invader(state, pos) or post
         # A shortcut across the border would turn the guard into a harmless Pacman.
         return (self.home_step(pos, goal, legal)
                 or min(options, key=lambda option: dist(option[1], goal))[0])
+
+    def likely_invader(self, state, pos):
+        """Most probable cell of the nearest hidden invader, or None if nobody is on our side."""
+        cells = []
+        for i in self.get_opponents(state):
+            if state.get_agent_state(i).is_pacman:
+                belief = self.team.tracker.belief[i]
+                cells.append(max(belief, key=lambda p: (belief[p], p)))
+        return min(cells, key=lambda p: (self.get_maze_distance(pos, p), p)) if cells else None
 
     def pressure(self, state, pos):
         """Sort key for chasing the nearest visible invader.
