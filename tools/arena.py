@@ -91,16 +91,18 @@ def match(team, opponent, layout, color, timeout, repeat=0, prefix="arena"):
     cmd = [sys.executable, __file__, "--one", str(red), str(blue), layout, seed]
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=REPO)
-        output, code = done.stdout + done.stderr, done.returncode
+        stdout, output, code = done.stdout, done.stdout + done.stderr, done.returncode
     except subprocess.TimeoutExpired as expired:
-        output, code = str(expired.stdout or "") + str(expired.stderr or ""), "timeout"
+        stdout, output, code = "", str(expired.stdout or "") + str(expired.stderr or ""), "timeout"
     row = dict(opponent=label(opponent), layout=layout, color=color, seed=seed, exit=code)
     try:
-        result = json.loads(output.strip().splitlines()[-1]) if code == 0 else {}
+        # The result is the last line on stdout; engine warnings go to stderr.
+        result = json.loads(stdout.strip().splitlines()[-1]) if code == 0 else {}
     except (IndexError, ValueError):
         result = {}
     ours = 0 if color == "red" else 1
     sign = 1 if color == "red" else -1
+    # A crash or timeout of either side invalidates the game; a time warning counts only for us.
     error = (not result or "Traceback" in output or result["crashed"] or result["timeout"]
              or any(result["warnings"][ours::2]))
     row.update(error=bool(error), log=output[-3000:] if error else "")
@@ -110,6 +112,7 @@ def match(team, opponent, layout, color, timeout, repeat=0, prefix="arena"):
                    moves=result["moves"], digest=result["digest"], banked=result["returned"][ours],
                    conceded=result["returned"][1 - ours], init_time=result["init_time"][ours],
                    max_time=result["max_time"][ours], p99_time=result["p99_time"][ours],
+                   warnings=sum(result["warnings"][ours::2]),
                    opponent_error=bool(result["crashed"] or result["timeout"]
                                        or any(result["warnings"][1 - ours::2])))
     return row
