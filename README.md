@@ -295,5 +295,5 @@ behind them are not in the repository, so treat these as rough figures:
 ## Credits
 
 Game rules and framework by UC Berkeley (CS188), RMIT, the University of Melbourne and UPF.
-The raider and guard started from our lab-4 practice team. Both versions were developed with AI assistance
-(OpenAI Codex, then Anthropic Claude).
+The raider and guard started from our lab-4 practice team. We used AI assistance during development,
+including to test the agents and check benchmark results.
