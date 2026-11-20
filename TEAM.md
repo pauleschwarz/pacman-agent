@@ -10,7 +10,7 @@
 
 **Team members:**
 
-* Student 1's Student number - Paul Schwarz - Student email - Student Github id
+* U278963 - Paul Schwarz - Student email - pauleschwarz
 * Student 2's Student number - Full Name - Student email - Student Github id
 
 
