@@ -10,7 +10,7 @@
 
 **Team members:**
 
-* U278963 - Paul Schwarz - Student email - pauleschwarz
+* U278963 - Paul Schwarz - paul.schwarz01@estudiant.upf.edu - pauleschwarz
 * U279609 - Matjaž Korošec - Student email - matjaz.korosec01@estudiant.upf.edu
 
 
