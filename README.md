@@ -209,12 +209,79 @@ Smaller trials that did not survive: making the raider avoid every cell an oppon
 (100 games, 25/13/62 against `v0`; too passive), recalling the raider for every invader (200 games, 67/36/97),
 and two raiders without a guard (100 games each, 41/2/57 against `v0`, 24/0/76 against the baseline).
 
+A second round tried five more ideas on the same phase-2 games against `v0`. Version 16 replays those games
+move for move, so every game pairs exactly. No idea gained on both kinds of layout, so the team stayed as it was.
+
+| Change | Fixed | Random | Kept |
+|---|---:|---:|---|
+| none (version 16) | 55.7% | 62.4% | |
+| guard raids while enemy ghosts are scared and nobody invades | 52.9% | 62.1% | no |
+| no capsule preference without a dangerous ghost near (`CAPSULE_BONUS` 0) | 55.7% | 63.4% | no |
+| capsules avoided without a dangerous ghost near (`CAPSULE_BONUS` -4) | 55.7% | 64.2% | no |
+| stronger capsule preference near a dangerous ghost (`CAPSULE_RUSH` 15) | 55.8% | 63.2% | no |
+| raider routes avoid the tracker's likely cells of hidden ghosts (cost 30 per unit of probability) | 51.8% | 66.5% | no |
+| the same with cost 10 | 53.5% | 65.2% | no |
+
+The capsule changes moved the paired score by less than twice its standard error, which is noise. Avoiding
+hidden ghosts (cost 30) helped on random mazes, a paired score change of +0.43 against a margin of 0.38. On the
+fixed layouts it did worse, -1.15 within a margin of 1.50; two thirds of the lost points came from jumboCapture
+(19 points over 20 games). It would pay off only on maze kinds we cannot predict, so we left it out.
+Against two baseline defenders (`turtle`) or two baseline attackers (`rush`) on RANDOM2000–2039 and the fixed
+layouts (`round2-zoo.jsonl`) the team won 101 and 102 of 104 games and drew the rest.
+
+A third round went after the standoff at the border. In the 80 games behind the observations below, the raider
+spent about 81 of its 300 turns as a Pacman within five steps of an active ghost without eating, and ate in
+about 18. Three ideas tried to turn that time into food, again on the phase-2 games against `v0`
+(`round3-*.jsonl`).
+
+| Change | Fixed | Random | Kept |
+|---|---:|---:|---|
+| none (version 16) | 55.7% | 62.4% | |
+| feint: a raider blocked on our side first walks to the gate it reaches with the largest lead over the visible ghosts | 48.8% | 59.1% | no |
+| the same, and an empty Pacman without a safe target turns back to do so | 36.8% | 51.6% | no |
+| pincer: the guard raids while no opponent can reach our side before it is back; a visible ghost near our raider does not count | 56.7% | 62.3% | no |
+| lookahead: with a ghost near and no safe target, expectimax over three rounds; the ghost steps towards us with probability 0.8, being caught costs what we carry plus 10 | 47.9% | 53.8% | no |
+| the same, being caught costs what we carry plus 3, or plus 5 | 47.9%, 47.9% | 53.3%, 54.0% | no |
+| the same, plus 3 and the ghost chasing with probability 0.5 | 49.4% | 52.6% | no |
+
+Neither feint helped. The plain feint lost points on both kinds of layout, though its paired score change stayed
+within the margin (-1.07 ± 1.30 fixed, -0.22 ± 0.54 random). Turning back and the lookahead lost by more than
+the margin on random mazes (-1.45 ± 0.67 and -1.19 ± 0.70). The lookahead banked fewer pellets than version 16,
+0.7 per game on the fixed layouts and 1.3 on random mazes. In the 80 games behind the rough figures below it
+almost stopped the raider dying (about 0.5 to 0.1 deaths per game). Our reading: three rounds are too short to
+see the detours to other food that the route planner finds, and the cost of being caught hardly changed that.
+The pincer was neutral (-1.23 ± 1.29 fixed, -0.03 ± 0.57 random). Four pincer games logged one time warning for
+our team while six games ran in parallel. Replayed alone, all four made the same moves without a warning
+(`round3-pincer-recheck.jsonl`), so the table counts their results. Three more pincer games logged a warning
+for `v0`; the arena does not count those as our errors.
+
+Until then every candidate had played `v0`, an opponent weaker than our team. Version 16 itself is a harder
+test, and the arena already takes any team as opponent. Against itself version 16 plays each blue game as the
+mirror of the red one, so it wins and loses exactly as often (`round3-h2h-*-v16.jsonl`; in these files the
+opponent `base` is version 16). Each candidate pairs game by game with that. The table shows the paired score
+change per game against version 16.
+
+| Candidate against version 16 | Fixed | Random |
+|---|---:|---:|
+| pincer | -0.15 ± 1.18 | -0.18 ± 0.44 |
+| hidden-ghost avoidance, cost 30 | +0.70 ± 0.83 | +0.07 ± 0.33 |
+| the same, cost 10 | +0.39 ± 0.78 | +0.06 ± 0.32 |
+| capsules avoided without a dangerous ghost near (`CAPSULE_BONUS` -4) | 0.00 ± 0.00 | -0.01 ± 0.35 |
+
+On the fixed layouts the capsule change played 239 of the 240 games move for move like version 16, and the
+other one ended with the same score. Only hidden-ghost avoidance leaned positive, at both costs. Before
+measuring further we fixed one rule for the stronger version, cost 30: keep it only if fresh games
+(RANDOM3000–3299 and the fixed layouts with new seeds, 840 games) show a gain beyond the margin. They did not:
++0.04 ± 0.89 fixed, -0.02 ± 0.27 random (`round3-confirm-*.jsonl`). Version 16 stays the final team.
+
 Observations from replaying development games against `v0` shaped these changes. The small analysis scripts
 behind them are not in the repository, so treat these as rough figures:
 
 - About 55% of all points were banked while the defending team was scared by a capsule.
 - The raider ate food in under 5% of its turns. Most of the rest it spent near a ghost, at the border or on the enemy side.
 - Guards rarely catch anyone (about 0.5 deaths per game), so the game is mostly a race for food.
+- Our guard spent about 107 of its 300 turns with no invader on our side (80 games, RANDOM8000–8039). The
+  first idea of the second round tried to use that time.
 
 ## Files
 
