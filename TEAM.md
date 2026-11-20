@@ -11,7 +11,7 @@
 **Team members:**
 
 * U278963 - Paul Schwarz - Student email - pauleschwarz
-* Student 2's Student number - Full Name - Student email - Student Github id
+* U279609 - Matjaž Korošec - Student email - matjazkorosec01-star
 
 
 Replace the lines above with the correct details of members. Delete or add lines as needed.
