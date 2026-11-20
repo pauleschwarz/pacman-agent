@@ -10,8 +10,8 @@
 
 **Team members:**
 
-* Student 1's Student number - Paul Schwarz - Student email - Student Github id
-* Student 2's Student number - Full Name - Student email - Student Github id
+* U278963 - Paul Schwarz - paul.schwarz01@estudiant.upf.edu - pauleschwarz
+* U279609 - Matjaž Korošec - Student email - matjaz.korosec01@estudiant.upf.edu
 
 
 Replace the lines above with the correct details of members. Delete or add lines as needed.
