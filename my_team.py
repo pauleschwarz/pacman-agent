@@ -28,7 +28,7 @@ ENDGAME = 50         # own turns left when the roles start to depend on the scor
 # Raider
 NEAR = 5             # steps within which a ghost, or home, counts as near
 FEAR_END = 3         # a scared ghost with this few turns of fear left already counts as dangerous
-LOAD = 5             # carried pellets worth banking once capsule protection runs short
+LOAD = 8             # carried pellets worth banking once capsule protection runs short
 SPARE = 3            # own turns kept in reserve for the way home
 CAPSULE_SPARE = 6    # a second capsule is saved while the first still covers the trip plus this
 CAPSULE_BONUS = 2    # preference for a capsule over food, in steps
@@ -296,7 +296,9 @@ class TeamAgent(CaptureAgent):
         close = any(dist(pos, g.get_position()) <= NEAR and g.scared_timer <= FEAR_END for g in ghosts)
         # During capsule protection even an unseen opponent's timer is observable.
         protection = min(state.get_agent_state(i).scared_timer for i in self.get_opponents(state))
-        full = me.num_carrying >= LOAD and protection <= home + SPARE
+        # Nobody defends while both opponents are Pacmen on our side, so a full load is not yet a reason to bank.
+        defended = not all(state.get_agent_state(i).is_pacman for i in self.get_opponents(state))
+        full = me.num_carrying >= LOAD and protection <= home + SPARE and defended
         bank = me.num_carrying and (full or len(food) <= LAST_FOOD or self.turns_left(state) <= home + SPARE
                                     or (close and home <= NEAR))
         # Save the next capsule while the first still covers the trip and a short retreat.

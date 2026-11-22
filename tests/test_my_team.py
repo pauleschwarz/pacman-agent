@@ -7,7 +7,7 @@ import io
 from pathlib import Path
 import random
 import sys
-from time import perf_counter
+from time import process_time
 from types import SimpleNamespace
 import unittest
 
@@ -132,10 +132,11 @@ class GameTest(unittest.TestCase):
         for agent in team:
             decide = agent.choose_action
 
+            # CPU time, not wall time: other load on the machine must not fail the check.
             def timed(state, decide=decide):
-                start = perf_counter()
+                start = process_time()
                 action = decide(state)
-                times.append(perf_counter() - start)
+                times.append(process_time() - start)
                 return action
             agent.choose_action = timed
         play(team, baseline(False), "jumboCapture")
