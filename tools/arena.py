@@ -1,6 +1,7 @@
 """Play many headless matches in parallel and report results from one team's view.
 
     venv/bin/python tools/arena.py my_team.py baseline --layouts RANDOM1-20 --jobs 8
+    venv/bin/python tools/arena.py my_team.py baseline --layouts tinyCapture --replays replays
 
 Every match runs in its own process with time enforcement (-c). Each layout is
 played twice with the same game seed, once per color. A match counts as an
@@ -9,8 +10,10 @@ traceback reaches the log, or when the process fails.
 """
 import argparse
 import hashlib
+from itertools import product
 import json
 import os
+import pickle
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import random
@@ -49,9 +52,9 @@ def expand(spec):
     return layouts
 
 
-def play_one(red, blue, layout, seed):
+def play_one(red, blue, layout, seed, replay=""):
     """Runs inside the child process and prints one JSON line."""
-    from contest import capture
+    from contest import capture, game as engine
     path = layout if layout.startswith("RANDOM") else str(CONTEST / "layouts" / (layout + ".lay"))
     options = capture.read_command(["-r", red, "-b", blue, "-l", path, "-q", "-c", "-i", "1200",
                                     "--delay-step", "0", "--setRandomSeed", seed])
@@ -62,6 +65,12 @@ def play_one(red, blue, layout, seed):
         agent.register_initial_state = timed(agent.register_initial_state, init)
         agent.choose_action = timed(agent.choose_action, move)
     game, = capture.run_games(**options)
+    if replay:
+        # The same record capture.py --record writes, so capture.py --replay can show the game.
+        record = dict(layout=options["layouts"][0], agents=[engine.Agent() for _ in options["agents"]],
+                      actions=game.move_history, length=options["length"],
+                      red_team_name=options["red_team_name"], blue_team_name=options["blue_team_name"])
+        Path(replay).write_bytes(pickle.dumps(record))
     team_moves = [sorted(moves[0] + moves[2]), sorted(moves[1] + moves[3])]
     agents = game.state.data.agent_states
     print(json.dumps(dict(
@@ -85,10 +94,11 @@ def timed(function, samples):
     return call
 
 
-def match(team, opponent, layout, color, timeout, repeat=0, prefix="arena"):
+def match(team, opponent, layout, color, timeout, seed, replay=None):
     red, blue = (team, opponent) if color == "red" else (opponent, team)
-    seed = prefix + "-" + layout + ("-%d" % repeat if repeat else "")
     cmd = [sys.executable, __file__, "--one", str(red), str(blue), layout, seed]
+    if replay is not None:
+        cmd.append(str(replay))
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=REPO)
         stdout, output, code = done.stdout, done.stdout + done.stderr, done.returncode
@@ -137,7 +147,7 @@ def summarize(rows):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--one":
-        play_one(*sys.argv[2:6])
+        play_one(*sys.argv[2:])
         return
     parser = argparse.ArgumentParser()
     parser.add_argument("team")
@@ -148,11 +158,34 @@ def main():
     parser.add_argument("--seed", default="arena", help="prefix of every game seed")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--replays", type=Path, help="folder for a replay of every game, for capture.py --replay; one folder per run, "
+                        "since a second run overwrites replays of the same games")
     args = parser.parse_args()
     team = team_path(args.team)
-    tasks = [(team, team_path(o), layout, color, args.timeout, repeat, args.seed)
-             for o in args.opponents for layout in expand(args.layouts) for repeat in range(args.repeat)
-             for color in ("red", "blue")]
+    opponents = [team_path(name) for name in args.opponents]
+    replay_dir = args.replays.resolve() if args.replays else None
+    tasks = []
+    identities = set()
+    replay_paths = set()
+    for opponent, layout, repeat, color in product(opponents, expand(args.layouts), range(args.repeat), ("red", "blue")):
+        name = label(opponent)
+        seed = args.seed + "-" + layout + ("-%d" % repeat if repeat else "")
+        identity = (name, layout, color, seed)
+        if identity in identities:
+            parser.error("duplicate game identity: %r; use distinct opponent labels and layouts" % (identity,))
+        identities.add(identity)
+
+        replay = None
+        if replay_dir is not None:
+            replay = replay_dir / ("%s-%s-%s.replay" % (name, seed, color))
+            # Keep replay names distinct on case-insensitive filesystems too.
+            path_key = str(replay.resolve()).casefold()
+            if path_key in replay_paths:
+                parser.error("replay filename collision: %s" % replay)
+            replay_paths.add(path_key)
+        tasks.append((team, opponent, layout, color, args.timeout, seed, replay))
+    if replay_dir is not None:
+        replay_dir.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(args.jobs) as pool:
         rows = list(pool.map(lambda task: match(*task), tasks))
     if args.out:
