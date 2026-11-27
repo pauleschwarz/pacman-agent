@@ -6,11 +6,10 @@
 # John DeNero (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
 # For more info, see http://inst.eecs.berkeley.edu/~cs188/sp09/pacman.html
 
-"""Capture-the-flag team: a raider collects food, a guard defends the border.
+"""Team Slowalemans: a raider collects food, a guard defends the border.
 
 Both agents share one map analysis and one belief over hidden opponent
 positions. Each turn adds the acting agent's own sonar reading to that belief.
-The README explains every rule and the measurements behind it.
 """
 
 from collections import Counter, deque
@@ -37,35 +36,40 @@ STICKY = 1           # preference for the current target, in steps
 RECENT = 8           # positions remembered; revisiting one costs a step more
 NEXT_TO_GHOST = 45   # extra route cost of an enemy cell next to an active ghost
 NEAR_GHOST = 8       # extra route cost two steps from it
-TRAP = 30            # extra route cost of entering a pocket whose exit the ghost reaches first
+TRAP = 30            # extra route cost of a pocket cell whose exit the ghost reaches before we get back out
 
 # Guard
+SWAP = 15            # guard turns the raider is held off at the border before the two change roles
 HELP_CARGO = 5       # a visible invader carrying this much calls the raider back
 REGION = 10          # the guard contests cells within this many steps of an invader
 FOOD_WEIGHT = 2      # extra weight of our food in the invader's region
 GATE_WEIGHT = 3      # extra weight of our gates once the invader carries food
 CLUE_TURNS = 6       # own turns a missing pellet or a last sighting stays a destination
+CHAIN = 5            # pellets of an unseen invader's predicted path the guard tries to cut off
 SHADOW = 2           # distance a scared guard keeps from a visible invader
 RAID_CARGO = 2       # a scared guard on a raid heads home with this many pellets
 RAID_SPARE = 2       # moves a scared guard keeps in reserve for its round trip
 GUARD_SPACE = 3      # a helping raider leaves gates this close to the guard to the guard
+SEAL_CARGO = 2       # a visible invader carrying this much is kept from every door first
 
 INF = 10 ** 6
 STRICT = False       # tests set this so that a bug raises instead of being logged
 
 
 def create_team(first_index, second_index, is_red, first="Raider", second="Guard", num_training=0):
-    team = Team()
-    return [TeamAgent(first_index, team, first), TeamAgent(second_index, team, second)]
+    team = Slowalemans()
+    return [Slowaleman(first_index, team, first), Slowaleman(second_index, team, second)]
 
 
-class Team:
+class Slowalemans:
     """State the two agents of one team share during a game."""
 
     def __init__(self):
         self.maze = None
         self.tracker = None
         self.helping = False  # the raider defends this turn
+        self.blocked = 0  # guard turns in a row the raider has been held off at the border
+        self.agents = {}  # index -> agent, so the guard can hand its role over
         self.joined = set()
 
     def join(self, agent, state):
@@ -74,8 +78,10 @@ class Team:
             self.maze = Maze(state, agent.red, agent.get_maze_distance)
             self.tracker = Tracker(state, self.maze, agent.get_opponents(state), agent.get_team(state))
             self.helping = False
+            self.blocked = 0
             self.joined = set()
         self.joined.add(agent.index)
+        self.agents[agent.index] = agent
 
 
 class Maze:
@@ -95,6 +101,13 @@ class Maze:
         self.nearest_gate = {p: min(self.gates, key=lambda g: distance(p, g)) for p in self.neighbors}
         self.center = min(self.gates, key=lambda g: sum(distance(g, h) for h in self.gates))
         self.exit = pocket_exits(self.neighbors)
+        capsules = state.get_red_capsules() if red else state.get_blue_capsules()
+        self.escapes = chase_game(self, set(capsules))
+
+    def holds(self, ghost, invader):
+        """Cells our ghost can move to after which the invader at invader never gets away."""
+        steps = [ghost] + [q for _, q in self.neighbors[ghost] if self.home(q)]
+        return [q for q in steps if q == invader or not (far(q, invader) or (q, invader) in self.escapes)]
 
     def home(self, p):
         return (p[0] < self.middle) == self.red
@@ -119,6 +132,55 @@ def pocket_exits(neighbors):
     for p, q in reversed(list(parent.items())):
         exits[p] = exits.get(q, q)
     return exits
+
+
+def far(p, q):
+    return manhattan_distance(p, q) > SIGHT
+
+
+def chase_game(maze, capsules):
+    """One ghost of ours against one invader on our side, solved backwards from the end positions.
+
+    The invader gets away by stepping onto its own side or one of our capsules, or out of our
+    ghost's sight; it is caught on our ghost's cell. Returns the positions (ghost, invader),
+    invader to move, from which the invader can force a way out.
+    """
+    cells = [p for p in maze.neighbors if maze.home(p)]
+    moves = {p: [p] + [q for _, q in maze.neighbors[p] if maze.home(q)] for p in cells}
+    escapes = set()
+    options = {}  # (ghost, invader), ghost to move: our moves that do not let it get away yet
+    queue = []
+    for i in cells:
+        out = any(not maze.home(q) or q in capsules for _, q in maze.neighbors[i])
+        for g in cells:
+            if g == i:
+                continue
+            if out or any(j != g and far(g, j) for j in moves[i]):
+                escapes.add((g, i))
+                queue.append((g, i, True))
+            if i not in moves[g]:  # otherwise we catch it
+                options[g, i] = sum(not far(h, i) for h in moves[g])
+                if not options[g, i]:
+                    queue.append((g, i, False))
+    while queue:
+        g, i, invader_to_move = queue.pop()
+        if invader_to_move:
+            # It gets away from (g, i), so our move into g was a losing option (a move out of sight
+            # never counted as one).
+            if far(g, i):
+                continue
+            for h in moves[g]:
+                if options.get((h, i), 0) > 0:
+                    options[h, i] -= 1
+                    if not options[h, i]:
+                        queue.append((h, i, False))
+        else:
+            # Every move of ours from (g, i) lets it get away, so its move into i does too.
+            for j in moves[i]:
+                if j != g and (g, j) not in escapes:
+                    escapes.add((g, j))
+                    queue.append((g, j, True))
+    return escapes
 
 
 class Tracker:
@@ -183,14 +245,16 @@ class Tracker:
         return result
 
 
-class TeamAgent(CaptureAgent):
+class Slowaleman(CaptureAgent):
     def __init__(self, index, team, role):
         super().__init__(index)
         self.team = team
+        self.first_role = role  # roles can swap during a game; every game starts with this one
         self.role = role
 
     def register_initial_state(self, state):
         super().register_initial_state(state)
+        self.role = self.first_role
         self.start = state.get_agent_position(self.index)
         self.recent = deque(maxlen=RECENT)
         self.target = None
@@ -217,9 +281,14 @@ class TeamAgent(CaptureAgent):
             self.note_clues(state)
             lead = self.get_score(state)
             endgame = self.turns_left(state) <= ENDGAME
+            quiet = not any(state.get_agent_state(i).is_pacman for i in self.get_opponents(state))
+            if self.role == "Guard" and not endgame:
+                self.swap_if_held_off(state, quiet)
             if self.role == "Guard":
-                # Behind at the end, a second raider is worth more than a guard.
-                action = self.raid(state, legal) if endgame and lead < 0 else self.guard(state, legal)
+                # Behind at the end, a second raider is worth more than a guard. Level with nobody on our
+                # side too: a pellet banked turns a draw into a win, one conceded only into a loss.
+                level = lead == 0 and quiet
+                action = self.raid(state, legal) if endgame and (lead < 0 or level) else self.guard(state, legal)
             elif endgame and lead > 0:
                 # Ahead at the end, bank what we carry and help protect the lead.
                 action = self.bank(state, legal)
@@ -284,8 +353,6 @@ class TeamAgent(CaptureAgent):
 
     def raid(self, state, legal):
         pos = state.get_agent_position(self.index)
-        if len(legal) == 1:
-            return legal[0]
         self.recent.append(pos)
         me = state.get_agent_state(self.index)
         ghosts = self.visible(state, invaders=False)
@@ -299,10 +366,12 @@ class TeamAgent(CaptureAgent):
         # Nobody defends while both opponents are Pacmen on our side, so a full load is not yet a reason to bank.
         defended = not all(state.get_agent_state(i).is_pacman for i in self.get_opponents(state))
         full = me.num_carrying >= LOAD and protection <= home + SPARE and defended
-        bank = me.num_carrying and (full or len(food) <= LAST_FOOD or self.turns_left(state) <= home + SPARE
-                                    or (close and home <= NEAR))
+        late = self.turns_left(state) <= home + SPARE
+        bank = me.num_carrying and (full or len(food) <= LAST_FOOD or late or (close and home <= NEAR))
         # Save the next capsule while the first still covers the trip and a short retreat.
         useful_caps = [p for p in sorted(caps) if protection <= dist(pos, p) + CAPSULE_SPARE]
+        # On the way home a capsule frees the way as surely as home itself, unless time is up.
+        refuges = [] if late else useful_caps
 
         if ghosts:
             # With a ghost in sight, prefer targets we provably reach first and can still escape from.
@@ -310,7 +379,7 @@ class TeamAgent(CaptureAgent):
             arrive, first = self.safe_reach(pos, legal, threat)
             slack = self.escape_slack(threat)
             if bank:
-                goals = [q for q in first if self.maze.home(q)]
+                goals = [q for q in first if self.maze.home(q) or q in refuges]
             else:
                 goals = [f for f in food if f in first and arrive[f] <= slack[f]]
                 goals += [c for c in useful_caps if c in first]
@@ -329,7 +398,7 @@ class TeamAgent(CaptureAgent):
 
         allowed = [action for action in legal if safe(action)] or legal
         costs, first = self.routes(pos, allowed, ghosts, caps)
-        goals = self.maze.gates if bank or not food else food + useful_caps
+        goals = self.maze.gates + refuges if bank or not food else food + useful_caps
         reachable = [p for p in goals if p in first]
         if not reachable:
             return Directions.STOP if Directions.STOP in allowed else allowed[0]
@@ -424,11 +493,11 @@ class TeamAgent(CaptureAgent):
                             continue
                         gap = dist(g.get_position(), q)
                         step += NEXT_TO_GHOST if gap <= 1 else NEAR_GHOST if gap == 2 else 0
-                        # A pocket is a trap if the ghost reaches its exit before we get in and back out.
+                        # A pocket cell is a trap if the ghost reaches the pocket's exit before we get
+                        # back out from that cell; every cell counts, so deep targets cost more.
                         mouth = self.maze.exit.get(q)
-                        if mouth and self.maze.exit.get(p) != mouth:
-                            if dist(g.get_position(), mouth) <= arrival + 2 * dist(q, mouth):
-                                step += TRAP
+                        if mouth and dist(g.get_position(), mouth) <= arrival + dist(q, mouth) + 1:
+                            step += TRAP
                 new_cost = cost + step
                 if new_cost < costs.get(q, INF):
                     costs[q] = new_cost
@@ -441,7 +510,7 @@ class TeamAgent(CaptureAgent):
     def guard(self, state, legal):
         patrol = self.defend(state, legal)
         me = state.get_agent_state(self.index)
-        if not me.scared_timer and not me.is_pacman:
+        if not me.scared_timer and not me.is_pacman or self.comeback(state):
             return patrol
         # A scared guard cannot catch anyone, so it raids if a round trip fits the window.
         pos = state.get_agent_position(self.index)
@@ -460,6 +529,42 @@ class TeamAgent(CaptureAgent):
             return patrol
         return action
 
+    def swap_if_held_off(self, state, quiet):
+        """A ghost that stays opposite our raider holds it off, but then it does not watch the guard.
+        So after SWAP such turns in a row with nobody of theirs on our side, the two change roles."""
+        mate = self.team.agents[[i for i in self.get_team(state) if i != self.index][0]]
+        self.team.blocked = self.team.blocked + 1 if self.held_off(state, mate.index) else 0
+        if self.team.blocked >= SWAP and quiet and not state.get_agent_state(self.index).scared_timer:
+            self.role, mate.role = "Raider", "Guard"
+            self.team.blocked = 0
+
+    def held_off(self, state, index):
+        """Agent index stands on our side next to the border with an awake enemy ghost close by."""
+        if state.get_agent_state(index).is_pacman:
+            return False
+        pos = state.get_agent_position(index)
+        dist = self.get_maze_distance
+        return (min(dist(pos, gate) for gate in self.maze.gates) <= 2 and
+                any(g.scared_timer <= FEAR_END and dist(pos, g.get_position()) <= NEAR
+                    for g in self.visible(state, invaders=False)))
+
+    def comeback(self, state):
+        """The visible invader a scared ghost of ours walks into, or None.
+
+        An eaten ghost starts again at once and without fear, and it costs no points. So when we
+        would be back at the invader before our fear runs out anyway, being eaten is the faster way.
+        """
+        me = state.get_agent_state(self.index)
+        if not me.scared_timer or me.is_pacman:
+            return None
+        pos = state.get_agent_position(self.index)
+        dist = self.get_maze_distance
+        invaders = [e.get_position() for e in self.visible(state, invaders=True)]
+        target = min(invaders, key=lambda p: (dist(pos, p), p), default=None)
+        if target and dist(pos, target) + dist(self.start, target) < me.scared_timer:
+            return target
+        return None
+
     def note_clues(self, state):
         """Remember where an invader was last seen or last ate our food."""
         pos = state.get_agent_position(self.index)
@@ -472,9 +577,31 @@ class TeamAgent(CaptureAgent):
         self.food = food
         if invaders or missing:
             self.clue = min(invaders or missing, key=lambda p: (self.get_maze_distance(pos, p), p))
+            if not invaders:
+                self.clue = self.intercept(pos, self.clue, food)
             self.expiry = state.data.timeleft - CLUE_TURNS * state.get_num_agents()
         elif pos == self.clue or state.data.timeleft <= self.expiry or pos == self.start:
             self.clue = None
+
+    def intercept(self, pos, eaten, food):
+        """Where to meet an unseen invader that just ate the pellet at eaten.
+
+        Attackers mostly eat the nearest pellet next. Follow that chain and return the first
+        pellet we reach no later than the invader, or the eaten cell if we are too slow.
+        """
+        dist = self.get_maze_distance
+        left = set(food)
+        here, eta = eaten, 0
+        for _ in range(CHAIN):
+            if not left:
+                break
+            step = min(left, key=lambda f: (dist(here, f), f))
+            eta += dist(here, step)
+            if dist(pos, step) <= eta:
+                return step
+            left.discard(step)
+            here = step
+        return eaten
 
     def defend(self, state, legal):
         post = self.patrol_gate(state)
@@ -482,8 +609,12 @@ class TeamAgent(CaptureAgent):
         options = [(a, Actions.get_successor(pos, a)) for a in legal]
         options = [(a, q) for a, q in options if self.maze.home(q)] or options
         dist = self.get_maze_distance
-        invaders = [e.get_position() for e in self.visible(state, invaders=True)]
+        seen = self.visible(state, invaders=True)
+        invaders = [e.get_position() for e in seen]
         if invaders and state.get_agent_state(self.index).scared_timer > 0:
+            target = self.comeback(state)
+            if target:
+                return min(options, key=lambda option: (dist(option[1], target), option[1]))[0]
             # Shadow from two steps away, close enough to pursue when the timer expires.
             def shadow(option):
                 gap = min(dist(option[1], p) for p in invaders)
@@ -493,7 +624,21 @@ class TeamAgent(CaptureAgent):
             for action, q in options:
                 if q in invaders:
                     return action
-            return min(options, key=self.pressure(state, pos))[0]
+            invader = min(seen, key=lambda e: (dist(pos, e.get_position()), e.get_position()))
+            target = invader.get_position()
+            key = self.pressure(state, invader)
+            # First keep the invader where, by the solved chase game, it can never get away.
+            held = self.maze.holds(pos, target) if self.maze.home(pos) else []
+
+            def order(option):
+                # Keep our capsules, then stand where we reach every door no later than a loaded
+                # invader (its load never counts), then follow pressure.
+                q = option[1]
+                sealed = invader.num_carrying < SEAL_CARGO or all(
+                    dist(q, gate) <= dist(target, gate) for gate in self.maze.gates)
+                capsules, *rest = key(option)
+                return (q not in held, capsules, not sealed, *rest)
+            return min(options, key=order)[0]
         goal = self.clue or self.likely_invader(state, pos) or post
         # A shortcut across the border would turn the guard into a harmless Pacman.
         return (self.home_step(pos, goal, legal)
@@ -508,8 +653,8 @@ class TeamAgent(CaptureAgent):
                 cells.append(max(belief, key=lambda p: (belief[p], p)))
         return min(cells, key=lambda p: (self.get_maze_distance(pos, p), p)) if cells else None
 
-    def pressure(self, state, pos):
-        """Sort key for chasing the nearest visible invader.
+    def pressure(self, state, invader):
+        """Sort key for chasing a visible invader.
 
         First keep it from reaching a capsule before us. Then shrink what it can
         still reach before us or a defending teammate within REGION steps: every
@@ -518,8 +663,6 @@ class TeamAgent(CaptureAgent):
         far-away chokepoints on large maps while the invader ate nearby.
         """
         dist = self.get_maze_distance
-        invader = min(self.visible(state, invaders=True),
-                      key=lambda e: (dist(pos, e.get_position()), e.get_position()))
         target = invader.get_position()
         capsules = self.get_capsules_you_are_defending(state)
         ahead = {p: dist(target, p) for p in self.maze.neighbors

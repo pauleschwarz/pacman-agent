@@ -1,6 +1,6 @@
 """Summarize an arena result file per opponent and layout, or compare two of them.
 
-    venv/bin/python tools/report.py results/final-fixed.jsonl
+    venv/bin/python tools/report.py games.jsonl
     venv/bin/python tools/report.py --compare before.jsonl after.jsonl
 
 The first form prints a Markdown table with one row per opponent and layout and

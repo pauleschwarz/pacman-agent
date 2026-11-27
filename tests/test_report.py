@@ -78,15 +78,6 @@ class ReportTest(unittest.TestCase):
                 self.assertIn("games.jsonl:3:", err)
                 self.assertIn(message, err)
 
-    def test_matches_the_published_final_results(self):
-        # The README reports these totals for the fixed layouts.
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(report.main([str(REPO / "results/final-fixed.jsonl")]), 0)
-        self.assertIn("| baseline | **all** | 120 | 108/11/1 | 93.1% |", out.getvalue())
-        self.assertIn("| agent | **all** | 120 | 59/25/36 | 56.1% |", out.getvalue())
-
-
 class CompareTest(unittest.TestCase):
     def compare(self, before, after):
         with tempfile.TemporaryDirectory() as folder:

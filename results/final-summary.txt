@@ -1,7 +1,0 @@
-baseline     games 400  W/D/L 400/  0/  0  points 100.0%  mean +21.42 (banked 21.47 conceded  0.05)  errors 0  slowest move 0.054s init 0.396s
-agent        games 400  W/D/L 259/ 41/100  points  68.2%  mean  +1.98 (banked 17.81 conceded 15.84)  errors 0  slowest move 0.018s init 0.399s
-sonar_team   games 400  W/D/L 282/ 37/ 81  points  73.6%  mean  +3.37 (banked 16.80 conceded 13.43)  errors 0  slowest move 0.055s init 0.401s
-race         games 400  W/D/L 285/ 30/ 85  points  73.8%  mean  +3.46 (banked 16.76 conceded 13.30)  errors 0  slowest move 0.040s init 0.459s
-center       games 400  W/D/L 302/ 40/ 58  points  78.8%  mean  +4.96 (banked 18.15 conceded 13.19)  errors 0  slowest move 0.013s init 0.397s
-baseline     games 120  W/D/L 108/ 11/  1  points  93.1%  mean +24.09 (banked 24.38 conceded  0.29)  errors 0  slowest move 0.012s init 1.259s
-agent        games 120  W/D/L  59/ 25/ 36  points  56.1%  mean  +0.62 (banked 12.38 conceded 11.77)  errors 0  slowest move 0.029s init 1.284s

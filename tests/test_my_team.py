@@ -16,7 +16,7 @@ sys.path.insert(0, str(REPO))
 
 from contest import capture  # noqa: E402
 from contest.baseline_team import create_team as baseline_team  # noqa: E402
-from contest.game import Actions  # noqa: E402
+from contest.game import Actions, Configuration  # noqa: E402
 from contest.layout import Layout  # noqa: E402
 from contest.text_display import NullGraphics  # noqa: E402
 import my_team  # noqa: E402
@@ -75,7 +75,7 @@ class EscapeTest(unittest.TestCase):
         cells = [(x, 0) for x in range(5)]
         neighbors = {p: [("West", (p[0] - 1, 0))] * (p[0] > 0) + [("East", (p[0] + 1, 0))] * (p[0] < 4)
                      for p in cells}
-        self.agent = my_team.TeamAgent(0, my_team.Team(), "Raider")
+        self.agent = my_team.Slowaleman(0, my_team.Slowalemans(), "Raider")
         self.agent.maze = SimpleNamespace(neighbors=neighbors, home=lambda p: p[0] == 0)
         self.threat = {(x, 0): 4 - x for x in range(1, 5)}  # the ghost's distance to each cell
 
@@ -88,6 +88,68 @@ class EscapeTest(unittest.TestCase):
         arrive, first = self.agent.safe_reach((0, 0), ["East", "Stop"], self.threat)
         self.assertEqual(arrive, {(0, 0): 0, (1, 0): 1})
         self.assertEqual(first, {(1, 0): "East"})
+
+
+class ChaseGameTest(unittest.TestCase):
+    """Our half is a corridor x=0..4 with a dead end at x=0; x=5 is the invader's side."""
+
+    def maze(self, capsules=()):
+        cells = [(x, 0) for x in range(6)]
+        neighbors = {p: [(None, (p[0] + d, 0)) for d in (-1, 1) if 0 <= p[0] + d <= 5] for p in cells}
+        maze = SimpleNamespace(neighbors=neighbors, home=lambda p: p[0] < 5)
+        maze.escapes = my_team.chase_game(maze, set(capsules))
+        return maze
+
+    def test_a_ghost_between_invader_and_door_holds_it(self):
+        maze = self.maze()
+        self.assertNotIn(((3, 0), (1, 0)), maze.escapes)  # invader in the dead end, our ghost at x=3
+        self.assertIn(((1, 0), (3, 0)), maze.escapes)  # our ghost behind the invader
+        # Staying, closing in and stepping back to the door all keep it in.
+        self.assertEqual(sorted(my_team.Maze.holds(maze, (3, 0), (1, 0))), [(2, 0), (3, 0), (4, 0)])
+
+    def test_a_capsule_is_a_way_out(self):
+        self.assertIn(((3, 0), (1, 0)), self.maze(capsules=[(0, 0)]).escapes)
+
+
+class InterceptTest(unittest.TestCase):
+    def setUp(self):
+        self.guard = my_team.Slowaleman(0, my_team.Slowalemans(), "Guard")
+        self.guard.get_maze_distance = lambda p, q: abs(p[0] - q[0]) + abs(p[1] - q[1])
+        self.food = [(4, 0), (6, 0), (8, 0)]  # the invader just ate the pellet at (2, 0)
+
+    def test_guard_meets_the_invader_further_down_its_chain(self):
+        # The invader eats (4, 0) at turn 2 and (6, 0) at turn 4; we reach (6, 0) at turn 3.
+        self.assertEqual(self.guard.intercept((9, 0), (2, 0), self.food), (6, 0))
+
+    def test_too_slow_a_guard_goes_where_the_pellet_vanished(self):
+        self.assertEqual(self.guard.intercept((30, 0), (2, 0), self.food), (2, 0))
+
+
+class ComebackTest(unittest.TestCase):
+    """Our scared guard (index 2, start (1, 2)) at (3, 2) next to an invader at (4, 2)."""
+
+    def setUp(self):
+        state = capture.GameState()
+        state.initialize(load(["%%%%%%%%%%",
+                               "%3......4%",
+                               "%1......2%",
+                               "%%%%%%%%%%"]), 4)
+        self.guard = ours(True)[1]
+        self.guard.register_initial_state(state)
+        self.state = state.deep_copy()
+        agents = self.state.data.agent_states
+        agents[2].configuration = Configuration((3, 2), "Stop")
+        agents[1].configuration = Configuration((4, 2), "Stop")
+        agents[1].is_pacman = True
+
+    def test_being_eaten_beats_waiting_out_a_long_fear(self):
+        # One step into the invader and three back from the start take 4 turns, not 20.
+        self.state.data.agent_states[2].scared_timer = 20
+        self.assertEqual(self.guard.comeback(self.state), (4, 2))
+
+    def test_a_short_fear_is_waited_out(self):
+        self.state.data.agent_states[2].scared_timer = 4
+        self.assertIsNone(self.guard.comeback(self.state))
 
 
 class GameTest(unittest.TestCase):
@@ -197,16 +259,20 @@ class GameTest(unittest.TestCase):
 
     def test_second_game_in_one_process_starts_fresh(self):
         team = ours(True)
-        trackers = []
+        trackers, roles = [], []
         register = team[0].register_initial_state
 
         def remember(state):
             register(state)
             trackers.append(team[0].team.tracker)
+            roles.append(team[0].role)
         team[0].register_initial_state = remember
+        # As if the two had swapped roles in an earlier game.
+        team[0].role, team[1].role = "Guard", "Raider"
         games = play(team, baseline(False), "RANDOM3", games=2)
         self.assertEqual(len(games), 2)
         self.assertIsNot(trackers[0], trackers[1])
+        self.assertEqual(roles, ["Raider", "Raider"])
         self.assertFalse(any(g.agent_crashed for g in games))
 
 
